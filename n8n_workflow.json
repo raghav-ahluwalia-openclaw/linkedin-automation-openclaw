@@ -1,0 +1,494 @@
+{
+  "name": "LinkedIn Opinion Engine (PEMI)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                "monday"
+              ],
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "cron_weekly_drafts",
+      "name": "Weekly Draft Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "application": "app{{AIRTABLE_BASE_ID}}",
+        "table": "Ideas",
+        "returnAll": true,
+        "additionalOptions": {
+          "filterByFormula": "AND({Status}='Backlog',{Priority}='High')"
+        }
+      },
+      "id": "airtable_list_ideas",
+      "name": "Fetch High-Priority Ideas",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [
+        -980,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1
+      },
+      "id": "split_ideas",
+      "name": "Split Ideas",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        -770,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const idea = $json.fields || $json;\nconst prompt = `You are writing LinkedIn opinion pieces for a senior analytics leader.\\nTopic: ${idea.Topic || ''}\\nAngle: ${idea.Angle || ''}\\nAudience: ${idea.Audience || ''}\\nBusiness problem: ${idea.BusinessProblem || ''}\\nProof point: ${idea.ProofPoint || ''}\\n\\nOutput 3 variants (A/B/C), each with:\\n1) Hook (max 18 words)\\n2) Body (120-220 words)\\n3) CTA (single sentence)\\n4) 5 relevant hashtags\\n\\nConstraints:\\n- Style: sharp, practical, no fluff\\n- Focus on data analytics + business intelligence outcomes\\n- Include one clear business impact statement\\n- Avoid emojis and hype language\\n- No invented stats\\nReturn valid JSON with keys: variants[].hook, body, cta, hashtags[]`;\n\nreturn [{ json: { idea, prompt } }];"
+      },
+      "id": "build_prompt",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/responses",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.OPENAI_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\":\"gpt-4.1-mini\",\"input\":$json.prompt}",
+        "options": {}
+      },
+      "id": "gen_drafts",
+      "name": "Generate 3 Variants",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -350,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = $json.output_text || $json.output?.[0]?.content?.[0]?.text || '';\nlet parsed;\ntry { parsed = JSON.parse(raw); } catch (e) { parsed = { variants: [] }; }\nconst idea = $('Build Prompt').item.json.idea;\nconst out = [];\nfor (const [i,v] of (parsed.variants || []).entries()) {\n  out.push({\n    json: {\n      IdeaRef: idea.IdeaID || idea.id || '',\n      Variant: ['A','B','C'][i] || 'A',\n      Hook: v.hook || '',\n      Body: v.body || '',\n      CTA: v.cta || '',\n      HashtagSet: (v.hashtags || []).join(' '),\n      ApprovalStatus: 'Pending'\n    }\n  });\n}\nreturn out.length ? out : [{json:{IdeaRef: idea.IdeaID || '', Variant:'A', Hook:'[parse_failed]', Body: raw, CTA:'', HashtagSet:'', ApprovalStatus:'Pending'}}];"
+      },
+      "id": "parse_variants",
+      "name": "Parse Variants",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -130,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "application": "app{{AIRTABLE_BASE_ID}}",
+        "table": "Drafts",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Variant": "={{$json.Variant}}",
+            "Hook": "={{$json.Hook}}",
+            "Body": "={{$json.Body}}",
+            "CTA": "={{$json.CTA}}",
+            "HashtagSet": "={{$json.HashtagSet}}",
+            "ApprovalStatus": "={{$json.ApprovalStatus}}"
+          }
+        }
+      },
+      "id": "save_drafts",
+      "name": "Save Draft Variants",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [
+        90,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "cron_schedule",
+      "name": "Scheduler Trigger (30m)",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "application": "app{{AIRTABLE_BASE_ID}}",
+        "table": "Drafts",
+        "returnAll": true,
+        "additionalOptions": {
+          "filterByFormula": "AND({ApprovedForSchedule}=1,{ApprovalStatus}='Approved')"
+        }
+      },
+      "id": "fetch_approved",
+      "name": "Fetch Approved Drafts",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [
+        -980,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1
+      },
+      "id": "split_approved",
+      "name": "Split Approved",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        -770,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.bufferapp.com/1/updates/create.json",
+        "sendBody": true,
+        "specifyBody": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "access_token",
+              "value": "={{$env.BUFFER_ACCESS_TOKEN}}"
+            },
+            {
+              "name": "profile_ids[]",
+              "value": "{{BUFFER_LINKEDIN_PROFILE_ID}}"
+            },
+            {
+              "name": "text",
+              "value": "={{$json.fields?.Hook || ''}}\n\n={{$json.fields?.Body || ''}}\n\n={{$json.fields?.CTA || ''}}\n\n={{$json.fields?.HashtagSet || ''}}"
+            },
+            {
+              "name": "shorten",
+              "value": "false"
+            },
+            {
+              "name": "now",
+              "value": "false"
+            }
+          ]
+        }
+      },
+      "id": "buffer_schedule",
+      "name": "Schedule in Buffer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -560,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "application": "app{{AIRTABLE_BASE_ID}}",
+        "table": "Posts",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status": "Scheduled",
+            "BufferUpdateID": "={{$json.updates?.[0]?.id || $json.update?.id || ''}}"
+          }
+        }
+      },
+      "id": "save_post",
+      "name": "Create Post Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [
+        -350,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 19,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "cron_metrics",
+      "name": "Daily Metrics Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.shieldapp.ai/v1/posts?period=7d",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SHIELD_API_KEY}}"
+            }
+          ]
+        }
+      },
+      "id": "fetch_metrics",
+      "name": "Fetch Engagement Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -980,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const data = items[0].json.data || items[0].json.posts || [];\nreturn data.map(p => ({json:{\n  SnapshotDate: new Date().toISOString().slice(0,10),\n  Impressions: p.impressions || 0,\n  Reactions: p.reactions || 0,\n  Comments: p.comments || 0,\n  Reposts: p.reposts || 0,\n  LinkedInPostURL: p.url || ''\n}}));"
+      },
+      "id": "normalize_metrics",
+      "name": "Normalize Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -770,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "application": "app{{AIRTABLE_BASE_ID}}",
+        "table": "Metrics",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "SnapshotDate": "={{$json.SnapshotDate}}",
+            "Impressions": "={{$json.Impressions}}",
+            "Reactions": "={{$json.Reactions}}",
+            "Comments": "={{$json.Comments}}",
+            "Reposts": "={{$json.Reposts}}"
+          }
+        }
+      },
+      "id": "save_metrics",
+      "name": "Save Metrics",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        340
+      ]
+    }
+  ],
+  "connections": {
+    "Weekly Draft Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch High-Priority Ideas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch High-Priority Ideas": {
+      "main": [
+        [
+          {
+            "node": "Split Ideas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Ideas": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "Generate 3 Variants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate 3 Variants": {
+      "main": [
+        [
+          {
+            "node": "Parse Variants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Variants": {
+      "main": [
+        [
+          {
+            "node": "Save Draft Variants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scheduler Trigger (30m)": {
+      "main": [
+        [
+          {
+            "node": "Fetch Approved Drafts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Approved Drafts": {
+      "main": [
+        [
+          {
+            "node": "Split Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Approved": {
+      "main": [
+        [
+          {
+            "node": "Schedule in Buffer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule in Buffer": {
+      "main": [
+        [
+          {
+            "node": "Create Post Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Metrics Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Engagement Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Engagement Metrics": {
+      "main": [
+        [
+          {
+            "node": "Normalize Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Metrics": {
+      "main": [
+        [
+          {
+            "node": "Save Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1"
+}
